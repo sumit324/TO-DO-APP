@@ -1,0 +1,75 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Docker Todo App — Multi-Container Practice Project
+# Services:  nginx (reverse proxy) → backend (Flask API) → db (PostgreSQL)
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── 1. PostgreSQL Database ───────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: todo_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       todo_db
+      POSTGRES_USER:     todo_user
+      POSTGRES_PASSWORD: todo_pass
+    volumes:
+      - db_data:/var/lib/postgresql/data          # named volume → data persists
+      - ./postgres-init:/docker-entrypoint-initdb.d  # seed.sql runs on first start
+    networks:
+      - backend_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U todo_user -d todo_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── 2. Flask API Backend ─────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: todo_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://todo_user:todo_pass@db:5432/todo_db
+    networks:
+      - backend_net
+      - frontend_net
+    depends_on:
+      db:
+        condition: service_healthy   # wait until Postgres is ready
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── 3. Nginx Reverse Proxy + Static Frontend ─────────────────────────────
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: todo_nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"          # access the app at http://localhost:8080
+    networks:
+      - frontend_net
+    depends_on:
+      backend:
+        condition: service_healthy
+
+# ─── Networks ────────────────────────────────────────────────────────────────
+networks:
+  backend_net:              # db ↔ backend (isolated from outside)
+    driver: bridge
+  frontend_net:             # backend ↔ nginx
+    driver: bridge
+
+# ─── Volumes ─────────────────────────────────────────────────────────────────
+volumes:
+  db_data:                  # postgres data persists across container restarts
